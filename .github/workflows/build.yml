@@ -26,7 +26,9 @@ jobs:
 
       # 3️⃣ Requests installieren
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests
 
       # 4️⃣ TDD Script ausführen
       - name: Run TDD script
