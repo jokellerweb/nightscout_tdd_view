@@ -24,7 +24,6 @@ def process_data(data):
     temp_basal_events = sorted(
         [d for d in data if d.get("eventType") == "Temp Basal"],
         key=lambda x: x["created_at"],
-        reverse=True
     )
 
     # Basal pro Zeitraum berechnen
