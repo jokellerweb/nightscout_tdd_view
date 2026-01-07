@@ -11,46 +11,85 @@ def fetch_data(ns_url, ns_secret):
     return resp.json()
 
 def process_data(data):
+    from datetime import datetime, timedelta
+    import pandas as pd
+
+    # ---------- 1️⃣ Bolus sammeln ----------
     records = []
+
     for d in data:
-        dt = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00")).date()
-        record = {"date": dt, "bolus": 0.0, "diverses": 0.0, "basal": 0.0}
+        dt = datetime.fromisoformat(
+            d["timestamp"].replace("Z", "+00:00")
+        ).date()
 
-        # Insulin nur berücksichtigen, wenn nicht None
-        insulin = d.get("insulin")
-        if insulin is not None:
-            if d.get("eventType") == "Correction Bolus":
-                record["bolus"] = float(insulin)
+        bolus = float(d.get("insulin", 0) or 0)
+
+        records.append({
+            "date": dt,
+            "bolus": bolus,
+            "diverses": 0.0,
+            "basal": 0.0
+        })
+
+    df = pd.DataFrame(records)
+
+    # ---------- 2️⃣ Basal aus Temp Basal berechnen ----------
+    temp = [e for e in data if e.get("eventType") == "Temp Basal"]
+
+    if temp:
+        temp.sort(key=lambda x: x["timestamp"])
+        basal_rows = []
+
+        for i in range(len(temp)):
+            current = temp[i]
+
+            start = datetime.fromisoformat(
+                current["timestamp"].replace("Z", "+00:00")
+            )
+            rate = float(current.get("rate", 0) or 0)   # U/h
+
+            # Ende = nächstes Temp Basal oder Tagesende
+            if i + 1 < len(temp):
+                end = datetime.fromisoformat(
+                    temp[i+1]["timestamp"].replace("Z", "+00:00")
+                )
             else:
-                record["diverses"] = float(insulin)
+                end = start.replace(hour=23, minute=59, second=59)
 
-        # Basalrate nur, wenn Wert vorhanden
-        if d.get("eventType") == "Temp Basal":
-            rate = d.get("rate")
-            if rate is not None:
-                record["basal"] = float(rate)
+            if end <= start:
+                continue
 
-        records.append(record)
+            # Jetzt zeitlich ggf. über mehrere Tage splitten
+            d = start
+            remaining = end
 
-    df = pd.DataFrame(records)
+            while d.date() < remaining.date():
+                day_end = datetime.combine(d.date(), datetime.max.time())
+                dh = (day_end - d).total_seconds() / 3600.0
+                basal_rows.append({"date": d.date(),
+                                   "basal": rate * dh})
+                d = day_end + timedelta(seconds=1)
+
+            # Rest bis Endzeit
+            dh = (remaining - d).total_seconds() / 3600.0
+            if dh > 0:
+                basal_rows.append({"date": d.date(),
+                                   "basal": rate * dh})
+
+        basal_df = pd.DataFrame(basal_rows)
+
+        if not basal_df.empty:
+            basal_daily = basal_df.groupby("date", as_index=False)["basal"].sum()
+            df = df.groupby("date", as_index=False).sum(numeric_only=True)
+            df = df.merge(basal_daily, on="date", how="outer").fillna(0)
+
+    # ---------- 3️⃣ Gesamtsumme ----------
     if df.empty:
         return pd.DataFrame(columns=["date", "basal", "diverses", "bolus", "total"])
 
-    daily = df.groupby("date", as_index=False).sum(numeric_only=True)
-    daily["total"] = daily["basal"] + daily["diverses"] + daily["bolus"]
+    df["total"] = df["basal"] + df["diverses"] + df["bolus"]
 
-    return daily
-
-
-    df = pd.DataFrame(records)
-    if df.empty:
-        return pd.DataFrame(columns=["date", "basal", "diverses", "bolus", "total"])
-    
-    # Summen pro Tag berechnen
-    daily = df.groupby("date").sum()
-    daily["total"] = daily["basal"] + daily["diverses"] + daily["bolus"]
-    daily = daily.reset_index()
-    return daily
+    return df.sort_values("date")
 
 def write_html(df):
     """Schöne HTML-Tabelle mit Zebra-Style erzeugen"""
