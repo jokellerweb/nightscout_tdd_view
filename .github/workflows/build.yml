@@ -1,37 +1,39 @@
-name: TDD Build and Publish
+name: Build Nightscout TDD Page
 
 on:
-  workflow_dispatch: # manuell auslösen
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"   # alle 6 Stunden, optional
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Repo auschecken
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # 2️⃣ Python installieren
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.x'
 
-      # 3️⃣ Dependencies installieren
-      - name: Install dependencies
+      - name: Install requirements
         run: pip install requests
 
-      # 4️⃣ TDD Script ausführen
-      - name: Run TDD Script
+      - name: Run TDD script
         run: python tdd.py
         env:
           NS_URL: ${{ secrets.NS_URL }}
           NS_SECRET: ${{ secrets.NS_SECRET }}
 
-      # 5️⃣ index.html committen und pushen mit GH_PAT
       - name: Commit HTML back to repo
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
           git add index.html
-          git commit -m "Update TDD HTML" || echo "No changes to commit"
-          git push https://x-access-token:${{ secrets.GH_PAT }}@github.com/jokellerweb/nightscout_tdd_view.git
+          git commit -m "Update TDD HTML" || echo "No changes"
+          git push
