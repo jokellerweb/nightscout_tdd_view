@@ -22,8 +22,8 @@ def process_data(data):
                 record["bolus"] = d["insulin"]
             else 
                 record["diverses"] = d["insulin"]
-        if d.get("basal"):
-            record["basal"] = d["basal"]
+        if d.get("eventType") == "Temp Basal"::
+            record["basal"] = d["rate"]
         records.append(record)
 
     df = pd.DataFrame(records)
