@@ -53,11 +53,77 @@ def process_data(data):
     return daily
 
 def write_html(df):
-    """HTML-Tabelle erstellen"""
-    html_table = df.to_html(index=False, float_format="{:.2f}".format)
-    with open("index.html", "w") as f:
-        f.write(f"<h2>Tägliche TDD Übersicht</h2>\n{html_table}")
-    print("index.html erfolgreich erstellt!")
+    """Schöne HTML-Tabelle mit Zebra-Style erzeugen"""
+    
+    # HTML-Tabelle erzeugen (nur Inhalt)
+    table_html = df.to_html(
+        index=False,
+        float_format="{:.2f}".format,
+        classes="tdd-table"
+    )
+
+    # Gesamtseite + CSS drumherum
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>TDD Übersicht</title>
+
+<style>
+body {{
+    font-family: Arial, sans-serif;
+    margin: 40px;
+}}
+
+h2 {{
+    font-size: 24px;
+    margin-bottom: 20px;
+}}
+
+table.tdd-table {{
+    border-collapse: collapse;
+    width: 100%;
+    max-width: 800px;
+}}
+
+.tdd-table th {{
+    background-color: #444;
+    color: white;
+    padding: 10px;
+    font-size: 14px;
+    text-align: left;
+}}
+
+.tdd-table td {{
+    padding: 8px;
+    border: 1px solid #ddd;
+}}
+
+.tdd-table tr:nth-child(even) {{
+    background-color: #f2f2f2;
+}}
+
+.tdd-table tr:hover {{
+    background-color: #e6e6e6;
+}}
+</style>
+
+</head>
+<body>
+
+<h2>Tägliche TDD Übersicht</h2>
+{table_html}
+
+</body>
+</html>
+"""
+
+    with open("index.html", "w", encoding="utf-8") as f:
+        f.write(html)
+
+    print("index.html schön erstellt 😎")
+
 
 def main():
     ns_url = os.environ.get("NS_URL")
