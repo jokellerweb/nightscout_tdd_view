@@ -19,7 +19,7 @@ def process_data(data):
 
     for d in data:
         dt = datetime.fromisoformat(
-            d["timestamp"].replace("Z", "+00:00")
+            d["created_at"].replace("Z", "+00:00")
         ).date()
 
         bolus = float(d.get("insulin", 0) or 0)
@@ -37,21 +37,21 @@ def process_data(data):
     temp = [e for e in data if e.get("eventType") == "Temp Basal"]
 
     if temp:
-        temp.sort(key=lambda x: x["timestamp"])
+        temp.sort(key=lambda x: x["created_at"])
         basal_rows = []
 
         for i in range(len(temp)):
             current = temp[i]
 
             start = datetime.fromisoformat(
-                current["timestamp"].replace("Z", "+00:00")
+                current["created_at"].replace("Z", "+00:00")
             )
             rate = float(current.get("rate", 0) or 0)   # U/h
 
             # Ende = nächstes Temp Basal oder Tagesende
             if i + 1 < len(temp):
                 end = datetime.fromisoformat(
-                    temp[i+1]["timestamp"].replace("Z", "+00:00")
+                    temp[i+1]["created_at"].replace("Z", "+00:00")
                 )
             else:
                 end = start.replace(hour=23, minute=59, second=59)
@@ -59,7 +59,7 @@ def process_data(data):
             if end <= start:
                 continue
 
-            # Jetzt zeitlich ggf. über mehrere Tage splitten
+            # Über mehrere Tage splitten
             d = start
             remaining = end
 
@@ -90,6 +90,7 @@ def process_data(data):
     df["total"] = df["basal"] + df["diverses"] + df["bolus"]
 
     return df.sort_values("date")
+
 
 def write_html(df):
     """Schöne HTML-Tabelle mit Zebra-Style erzeugen"""
