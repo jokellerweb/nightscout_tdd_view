@@ -1,15 +1,17 @@
 import json
+import requests
+import os
 from datetime import datetime, timedelta
 from collections import defaultdict
-
-def load_data(file_path):
-    with open(file_path, "r", encoding="utf-8") as f:
-        return json.load(f)
 
 def round_u(v):
     return round(v, 2)
 
 def main():
+    NS_URL = os.environ.get("NS_URL")
+    NS_SECRET = os.environ.get("NS_SECRET")
+    r = requests.get(f"{NS_URL}/api/v1/treatments.json?count=10000&api_secret={NS_SECRET}")
+    data = r.json()
     data = load_data("data.json")
 
     days = defaultdict(lambda: {"basal": 0.0, "bolus": 0.0, "smb": 0.0})
