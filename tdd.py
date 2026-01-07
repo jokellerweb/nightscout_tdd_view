@@ -12,7 +12,6 @@ def main():
     NS_SECRET = os.environ.get("NS_SECRET")
     r = requests.get(f"{NS_URL}/api/v1/treatments.json?count=10000&api_secret={NS_SECRET}")
     data = r.json()
-    data = load_data("data.json")
 
     days = defaultdict(lambda: {"basal": 0.0, "bolus": 0.0, "smb": 0.0})
 
