@@ -1,7 +1,7 @@
 import os
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta, time, timezone
 
 def fetch_data(ns_url, ns_secret):
     """Alle Insulin-Daten aus treatments.json holen"""
@@ -11,86 +11,66 @@ def fetch_data(ns_url, ns_secret):
     return resp.json()
 
 def process_data(data):
-    from datetime import datetime, timedelta
-    import pandas as pd
+    """
+    Daten aus Nightscout verarbeiten:
+    - Basal über Temp Basal Events berechnen
+    - Bolus und andere Insuline summieren
+    - Tagesweise summieren
+    """
+    basal_rows = []
+    insulin_rows = []
 
-    # ---------- 1️⃣ Bolus sammeln ----------
-    records = []
+    # Temp Basal Events sortieren nach Zeit
+    temp_basal_events = sorted(
+        [d for d in data if d.get("eventType") == "Temp Basal"],
+        key=lambda x: x["created_at"]
+    )
 
+    # Basal pro Zeitraum berechnen
+    for i, d in enumerate(temp_basal_events):
+        start = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
+        rate = float(d.get("rate", 0))
+        
+        # Ende ist entweder nächstes Temp Basal oder jetzt
+        if i + 1 < len(temp_basal_events):
+            end = datetime.fromisoformat(temp_basal_events[i+1]["created_at"].replace("Z", "+00:00"))
+        else:
+            end = start  # fallback, später ggf. auf jetzt setzen
+
+        current = start
+        while current.date() <= end.date():
+            # Tagesende für die aktuelle Zeile
+            day_end = datetime.combine(current.date(), time.max, tzinfo=current.tzinfo)
+            period_end = min(day_end, end)
+            hours = (period_end - current).total_seconds() / 3600.0
+            basal_rows.append({"date": current.date(), "basal": rate * hours})
+            current = period_end + timedelta(seconds=1)  # nächste Periode
+
+    # Bolus & Diverses summieren
     for d in data:
-        dt = datetime.fromisoformat(
-            d["created_at"].replace("Z", "+00:00")
-        ).date()
+        dt = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00")).date()
+        bolus = float(d.get("insulin", 0)) if d.get("insulin") else 0.0
+        diverses = 0.0  # ggf. andere Insulinarten hier ergänzen
+        insulin_rows.append({"date": dt, "bolus": bolus, "diverses": diverses})
 
-        bolus = float(d.get("insulin", 0) or 0)
+    # DataFrames erstellen
+    df_basal = pd.DataFrame(basal_rows)
+    df_insulin = pd.DataFrame(insulin_rows)
 
-        records.append({
-            "date": dt,
-            "bolus": bolus,
-            "diverses": 0.0,
-            "basal": 0.0
-        })
+    if df_basal.empty:
+        df_basal = pd.DataFrame(columns=["date", "basal"])
+    if df_insulin.empty:
+        df_insulin = pd.DataFrame(columns=["date", "bolus", "diverses"])
 
-    df = pd.DataFrame(records)
+    # Tagesweise summieren
+    daily_basal = df_basal.groupby("date", as_index=False).sum(numeric_only=True)
+    daily_insulin = df_insulin.groupby("date", as_index=False).sum(numeric_only=True)
 
-    # ---------- 2️⃣ Basal aus Temp Basal berechnen ----------
-    temp = [e for e in data if e.get("eventType") == "Temp Basal"]
+    # Zusammenführen
+    daily = pd.merge(daily_basal, daily_insulin, on="date", how="outer").fillna(0)
+    daily["total"] = daily["basal"] + daily["bolus"] + daily["diverses"]
 
-    if temp:
-        temp.sort(key=lambda x: x["created_at"])
-        basal_rows = []
-
-        for i in range(len(temp)):
-            current = temp[i]
-
-            start = datetime.fromisoformat(
-                current["created_at"].replace("Z", "+00:00")
-            )
-            rate = float(current.get("rate", 0) or 0)   # U/h
-
-            # Ende = nächstes Temp Basal oder Tagesende
-            if i + 1 < len(temp):
-                end = datetime.fromisoformat(
-                    temp[i+1]["created_at"].replace("Z", "+00:00")
-                )
-            else:
-                end = start.replace(hour=23, minute=59, second=59)
-
-            if end <= start:
-                continue
-
-            # Über mehrere Tage splitten
-            d = start
-            remaining = end
-
-            while d.date() < remaining.date():
-                day_end = datetime.combine(d.date(), datetime.max.time())
-                dh = (day_end - d).total_seconds() / 3600.0
-                basal_rows.append({"date": d.date(),
-                                   "basal": rate * dh})
-                d = day_end + timedelta(seconds=1)
-
-            # Rest bis Endzeit
-            dh = (remaining - d).total_seconds() / 3600.0
-            if dh > 0:
-                basal_rows.append({"date": d.date(),
-                                   "basal": rate * dh})
-
-        basal_df = pd.DataFrame(basal_rows)
-
-        if not basal_df.empty:
-            basal_daily = basal_df.groupby("date", as_index=False)["basal"].sum()
-            df = df.groupby("date", as_index=False).sum(numeric_only=True)
-            df = df.merge(basal_daily, on="date", how="outer").fillna(0)
-
-    # ---------- 3️⃣ Gesamtsumme ----------
-    if df.empty:
-        return pd.DataFrame(columns=["date", "basal", "diverses", "bolus", "total"])
-
-    df["total"] = df["basal"] + df["diverses"] + df["bolus"]
-
-    return df.sort_values("date")
-
+    return daily
 
 def write_html(df):
     """Schöne HTML-Tabelle mit Zebra-Style erzeugen"""
