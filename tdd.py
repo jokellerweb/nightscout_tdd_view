@@ -11,27 +11,32 @@ def fetch_data(ns_url, ns_secret):
     return resp.json()
 
 def process_data(data):
-    """Daten in DataFrame umwandeln und nach Typ summieren"""
     records = []
     for d in data:
-        # Datum extrahieren
         dt = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00")).date()
-        record = {"date": dt, "bolus": 0, "diverses": 0, "basal": 0}
-        if d.get("insulin"):
+        record = {"date": dt, "bolus": 0.0, "diverses": 0.0, "basal": 0.0}
+
+        # Insulin nur berücksichtigen, wenn nicht None
+        insulin = d.get("insulin")
+        if insulin is not None:
             if d.get("eventType") == "Correction Bolus":
-                record["bolus"] = d["insulin"]
-            else 
-                record["diverses"] = d["insulin"]
-        if d.get("eventType") == "Temp Basal"::
-            record["basal"] = d["rate"]
+                record["bolus"] = float(insulin)
+            else:
+                record["diverses"] = float(insulin)
+
+        # Basalrate nur, wenn Wert vorhanden
+        if d.get("eventType") == "Temp Basal":
+            rate = d.get("rate")
+            if rate is not None:
+                record["basal"] = float(rate)
+
         records.append(record)
 
     df = pd.DataFrame(records)
     if df.empty:
         return pd.DataFrame(columns=["date", "basal", "diverses", "bolus", "total"])
-    
-    # Summen pro Tag berechnen
-    daily = df.groupby("date", as_index=False).sum()  # <-- as_index=False behält "date" als Spalte
+
+    daily = df.groupby("date", as_index=False).sum(numeric_only=True)
     daily["total"] = daily["basal"] + daily["diverses"] + daily["bolus"]
 
     return daily
