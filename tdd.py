@@ -18,7 +18,7 @@ def process_data(data):
         dt = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00")).date()
         record = {"date": dt, "bolus": 0, "diverses": 0, "basal": 0}
         if d.get("insulin"):
-            if d.get("insulinType") == "Correction Bolus":
+            if d.get("eventType") == "Correction Bolus":
                 record["bolus"] = d["insulin"]
             else 
                 record["diverses"] = d["insulin"]
