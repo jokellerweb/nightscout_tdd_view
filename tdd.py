@@ -20,16 +20,16 @@ def process_data(data):
     basal_rows = []
     insulin_rows = []
 
-# Temp Basal Events sortieren: ältestes zuerst
-temp_basal_events = sorted(
-    [d for d in data if d.get("eventType") == "Temp Basal"],
-    key=lambda x: x["created_at"]
-)
-
-for i in range(len(temp_basal_events)):
-    d = temp_basal_events[i]
-    start = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
-    rate = float(d.get("rate", 0))
+    # Temp Basal Events sortieren: ältestes zuerst
+    temp_basal_events = sorted(
+        [d for d in data if d.get("eventType") == "Temp Basal"],
+        key=lambda x: x["created_at"]
+    )
+    
+    for i in range(len(temp_basal_events)):
+        d = temp_basal_events[i]
+        start = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
+        rate = float(d.get("rate", 0))
 
     # Ende = Start des nächsten Temp Basal Events
     if i + 1 < len(temp_basal_events):
