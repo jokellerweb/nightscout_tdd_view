@@ -3,86 +3,64 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 # === CONFIG ===
-NIGHTSCOUT_URL = "https://dein-nightscout-url.herokuapp.com/api/v1"  # z.B. https://mybg.ns.io/api/v1
-API_KEY = "DEIN_API_KEY"  # falls notwendig
+NIGHTSCOUT_URL = "https://dein-nightscout-url.herokuapp.com/api/v1"  # <--- anpassen
 
-# Zeitraum: letzte 7 Tage
-END_DATE = datetime.utcnow()
-START_DATE = END_DATE - timedelta(days=7)
-
-# === FUNKTIONEN ===
-def fetch_entries(entry_type):
-    """Ruft Einträge vom Typ 'bolus' oder 'basal' aus Nightscout ab."""
+# === HELPER ===
+def fetch_entries(entry_type="entries"):
     url = f"{NIGHTSCOUT_URL}/{entry_type}.json"
-    params = {
-        "find[date][$gte]": int(START_DATE.timestamp() * 1000),
-        "find[date][$lte]": int(END_DATE.timestamp() * 1000),
-        "count": 1000
-    }
-    headers = {"API-SECRET": API_KEY} if API_KEY else {}
-    response = requests.get(url, params=params, headers=headers)
-    response.raise_for_status()
-    return response.json()
+    r = requests.get(url)
+    r.raise_for_status()
+    return r.json()
 
-def process_bolus(entries):
-    """Summiert normale Bolus- und SMB-Mengen pro Tag."""
-    data = {}
-    for e in entries:
-        date = datetime.fromtimestamp(e['date']/1000).date()
-        if date not in data:
-            data[date] = {"bolus": 0, "smb": 0}
-        if e.get("bolus_type") == "SMB" or e.get("type") == "SMB":
-            data[date]["smb"] += e.get("amount", 0)
-        else:
-            data[date]["bolus"] += e.get("amount", 0)
-    return data
+def fetch_treatments():
+    return fetch_entries("treatments")
 
-def process_basal(entries):
-    """Summiert Basal pro Tag: rate * duration (in h)."""
-    data = {}
-    for e in entries:
-        date = datetime.fromtimestamp(e['time']/1000).date() if 'time' in e else datetime.fromtimestamp(e['date']/1000).date()
-        duration_min = e.get("duration", 0) / 60000  # ms → min
-        basal_units = e.get("rate", 0) * (duration_min / 60)
-        if date not in data:
-            data[date] = 0
-        data[date] += basal_units
-    return data
+def parse_date(datestr):
+    return datetime.fromisoformat(datestr.replace("Z", "+00:00")).date()
 
-# === DATEN LADEN ===
-bolus_entries = fetch_entries("bolus")
-basal_entries = fetch_entries("basal")
+# === DATEN SAMMELN ===
+treatments = fetch_treatments()
 
-bolus_data = process_bolus(bolus_entries)
-basal_data = process_basal(basal_entries)
+data = []
+for t in treatments:
+    dt = parse_date(t['created_at'])
+    bolus = t.get('bolus', 0) if 'bolus' in t else t.get('insulin', 0)
+    basal = t.get('rate', 0) if t.get('eventType') == 'Temp Basal' else 0
+    smb = t.get('insulin', 0) if t.get('eventType') == 'Bolus Wizard' else 0
 
-# === TABELLE ERSTELLEN ===
-dates = [START_DATE.date() + timedelta(days=i) for i in range(8)]
-rows = []
-for d in dates:
-    bolus = bolus_data.get(d, {}).get("bolus", 0)
-    smb = bolus_data.get(d, {}).get("smb", 0)
-    basal = basal_data.get(d, 0)
-    total = bolus + smb + basal
-    rows.append({
-        "Datum": d.strftime("%Y-%m-%d"),
-        "Bolus (U)": round(bolus, 2),
-        "Basal (U)": round(basal, 2),
-        "SMB (U)": round(smb, 2),
-        "Gesamt (U)": round(total, 2)
-    })
+    data.append({"date": dt, "bolus": bolus, "basal": basal, "smb": smb})
 
-df = pd.DataFrame(rows)
+df = pd.DataFrame(data)
+if df.empty:
+    print("Keine Daten gefunden.")
+    exit()
 
-# === Tabelle ausgeben mit leicht grauen Zeilen ===
-def style_table(df):
-    return df.style \
-        .set_table_styles([
-            {"selector": "th", "props": [("background-color", "#4CAF50"), ("color", "white"), ("font-weight", "bold")]}  # Kopfzeile
-        ]) \
-        .apply(lambda x: ['background-color: #f2f2f2' if i%2 else '' for i in range(len(x))], axis=1) \
-        .format("{:.2f}", subset=["Bolus (U)", "Basal (U)", "SMB (U)", "Gesamt (U)"])
+# Gruppieren nach Datum
+daily = df.groupby("date").sum()
+daily['total'] = daily['bolus'] + daily['basal'] + daily['smb']
+daily = daily.sort_index(ascending=False)
 
-styled = style_table(df)
-styled.to_html("tdd_uebersicht.html")  # optional als HTML speichern
-styled
+# Durchschnittsberechnung
+avg_all = daily['total'].mean()
+avg_2 = daily['total'].head(2).mean()
+avg_3 = daily['total'].head(3).mean()
+avg_4 = daily['total'].head(4).mean()
+avg_7 = daily['total'].head(7).mean()
+
+# === TABLE PRINT ===
+def print_table(df):
+    print("\nTägliche TDD Übersicht (letzte 7 Tage)\n")
+    print(f"{'Datum':<12}{'Bolus (U)':<12}{'Basal (U)':<12}{'SMB (U)':<12}{'Gesamt (U)':<12}")
+    for i, (idx, row) in enumerate(df.head(7).iterrows()):
+        shade = "\033[47m" if i % 2 else ""  # leichte Grauschattierung für jede 2. Zeile
+        endshade = "\033[0m" if shade else ""
+        print(f"{shade}{idx}  {row['bolus']:<12.2f}{row['basal']:<12.2f}{row['smb']:<12.2f}{row['total']:<12.2f}{endshade}")
+
+print_table(daily)
+
+print("\nDurchschnittliche TDD:")
+print(f"Alle Daten: {avg_all:.2f} U")
+print(f"Letzte 2 Tage: {avg_2:.2f} U")
+print(f"Letzte 3 Tage: {avg_3:.2f} U")
+print(f"Letzte 4 Tage: {avg_4:.2f} U")
+print(f"Letzte 7 Tage: {avg_7:.2f} U")
