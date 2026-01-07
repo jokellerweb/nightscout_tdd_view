@@ -11,36 +11,55 @@ def fetch_data(ns_url, ns_secret):
     return resp.json()
 
 def process_data(data):
+    """
+    Daten aus Nightscout verarbeiten:
+    - Basal über Temp Basal Events berechnen (richtig)
+    - Bolus und andere Insuline summieren
+    - Tagesweise summieren
+    """
     basal_rows = []
     insulin_rows = []
 
-    # Temp Basal Events sortieren nach Zeit
+    # Temp Basal Events sortieren: **neuestes zuerst**
     temp_basal_events = sorted(
         [d for d in data if d.get("eventType") == "Temp Basal"],
-        key=lambda x: x["created_at"]
+        key=lambda x: x["created_at"],
+        reverse=True
     )
 
-    for i, d in enumerate(temp_basal_events):
+    # Basal pro Zeitraum berechnen
+    for i in range(len(temp_basal_events)):
+        d = temp_basal_events[i]
         start = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
         rate = float(d.get("rate", 0))
-        
-        # Ende = nächstes Temp Basal oder jetzt
+
+        # Ende = Start des vorherigen (älteren) Temp Basal Events
         if i + 1 < len(temp_basal_events):
-            end = datetime.fromisoformat(temp_basal_events[i+1]["created_at"].replace("Z", "+00:00"))
+            end = datetime.fromisoformat(temp_basal_events[i + 1]["created_at"].replace("Z", "+00:00"))
         else:
+            # Für das älteste Event: bis jetzt
             end = datetime.now(timezone.utc)
 
+        # Dauer in Stunden
         hours = (end - start).total_seconds() / 3600.0
         if hours > 0:
-            basal_rows.append({"date": start.date(), "basal": rate * hours})
+            # Auf Tagesbasis splitten
+            current = start
+            while current < end:
+                day_end = datetime.combine(current.date(), time.max, tzinfo=current.tzinfo)
+                period_end = min(day_end, end)
+                hours_day = (period_end - current).total_seconds() / 3600.0
+                basal_rows.append({"date": current.date(), "basal": rate * hours_day})
+                current = period_end + timedelta(seconds=1)
 
     # Bolus & Diverses summieren
     for d in data:
         dt = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00")).date()
         bolus = float(d.get("insulin", 0)) if d.get("insulin") else 0.0
-        diverses = 0.0
+        diverses = 0.0  # ggf. andere Insulinarten hier ergänzen
         insulin_rows.append({"date": dt, "bolus": bolus, "diverses": diverses})
 
+    # DataFrames erstellen
     df_basal = pd.DataFrame(basal_rows)
     df_insulin = pd.DataFrame(insulin_rows)
 
@@ -49,13 +68,16 @@ def process_data(data):
     if df_insulin.empty:
         df_insulin = pd.DataFrame(columns=["date", "bolus", "diverses"])
 
+    # Tagesweise summieren
     daily_basal = df_basal.groupby("date", as_index=False).sum(numeric_only=True)
     daily_insulin = df_insulin.groupby("date", as_index=False).sum(numeric_only=True)
 
+    # Zusammenführen
     daily = pd.merge(daily_basal, daily_insulin, on="date", how="outer").fillna(0)
     daily["total"] = daily["basal"] + daily["bolus"] + daily["diverses"]
 
     return daily
+
 
 def write_html(df):
     """Schöne HTML-Tabelle mit Zebra-Style erzeugen"""
