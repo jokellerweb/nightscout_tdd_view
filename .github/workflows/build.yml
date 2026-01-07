@@ -1,39 +1,104 @@
-name: Build Nightscout TDD Page
+import os
+import requests
+from datetime import datetime, timedelta
+from collections import defaultdict
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 */6 * * *"   # alle 6 Stunden, optional
+# -------------------
+# Hilfsfunktionen
+# -------------------
+def round_u(v):
+    return round(v, 2)
 
-permissions:
-  contents: write
+def fetch_treatments():
+    NS_URL = os.environ.get("NS_URL")
+    NS_SECRET = os.environ.get("NS_SECRET")
+    if not NS_URL or not NS_SECRET:
+        raise ValueError("NS_URL oder NS_SECRET nicht gesetzt")
+    
+    url = f"{NS_URL}/api/v1/treatments.json?count=10000&api_secret={NS_SECRET}"
+    r = requests.get(url)
+    r.raise_for_status()
+    return r.json()
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+# -------------------
+# TDD Berechnung
+# -------------------
+def calculate_tdd(data):
+    days = defaultdict(lambda: {"basal": 0.0, "bolus": 0.0, "smb": 0.0})
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    for t in data:
+        ts = t.get("timestamp")
+        if not ts:
+            continue
+        day = datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
+        et = t.get("eventType", "")
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
+        # Bolus
+        if "Bolus" in et:
+            insulin = float(t.get("insulin", 0) or 0)
+            if insulin > 0:
+                if "SMB" in et or "Microbolus" in et:
+                    days[day]["smb"] += insulin
+                else:
+                    days[day]["bolus"] += insulin
 
-      - name: Install requirements
-        run: pip install requests
+        # Basal
+        if et == "Temp Basal":
+            rate = float(t.get("rate", 0) or 0)          # U/hr
+            duration = float(t.get("duration", 0) or 0)  # minutes
+            if rate > 0 and duration > 0:
+                units = rate * (duration / 60.0)
+                days[day]["basal"] += units
 
-      - name: Run TDD script
-        run: python tdd.py
-        env:
-          NS_URL: ${{ secrets.NS_URL }}
-          NS_SECRET: ${{ secrets.NS_SECRET }}
+    return days
 
-      - name: Commit HTML back to repo
-        run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
-          git add index.html
-          git commit -m "Update TDD HTML" || echo "No changes"
-          git push
+# -------------------
+# HTML erzeugen
+# -------------------
+def generate_html(days):
+    sorted_days = sorted(days.keys(), reverse=True)
+    html = "<html><head><title>TDD Übersicht</title></head><body>"
+    html += "<h2>Tägliche TDD Übersicht</h2>"
+    html += "<table border='1' cellpadding='5'><tr><th>Datum</th><th>Basal</th><th>Bolus</th><th>SMB</th><th>Gesamt</th></tr>"
+
+    tdd_values = []
+
+    for d in sorted_days:
+        basal = round_u(days[d]["basal"])
+        bolus = round_u(days[d]["bolus"])
+        smb = round_u(days[d]["smb"])
+        total = round_u(basal + bolus + smb)
+        tdd_values.append((d, total))
+        html += f"<tr><td>{d}</td><td>{basal}</td><td>{bolus}</td><td>{smb}</td><td>{total}</td></tr>"
+
+    html += "</table>"
+
+    # Durchschnitt
+    if tdd_values:
+        avg_all = sum(v for _, v in tdd_values) / len(tdd_values)
+        today = sorted_days[0]
+        last7 = [v for d, v in tdd_values if d >= today - timedelta(days=6)]
+        avg7 = sum(last7) / len(last7) if last7 else 0
+        html += f"<p>Durchschnitt TDD (alle Daten): {avg_all:.2f} U</p>"
+        html += f"<p>Durchschnitt TDD (letzte 7 Tage): {avg7:.2f} U</p>"
+
+    html += "</body></html>"
+    return html
+
+# -------------------
+# Main
+# -------------------
+def main():
+    data = fetch_treatments()
+    days = calculate_tdd(data)
+    html = generate_html(days)
+
+    # Speichern
+    with open("index.html", "w", encoding="utf-8") as f:
+        f.write(html)
+
+    print("index.html erstellt ✅")
+
+if __name__ == "__main__":
+    main()
+
