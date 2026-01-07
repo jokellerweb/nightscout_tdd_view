@@ -26,27 +26,32 @@ def process_data(data):
         key=lambda x: x["created_at"]
     )
     
+    print(f"Gefundene Temp Basal Events: {len(temp_basal_events)}")
+    for d in temp_basal_events:
+        print(f"- Event: {d['created_at']} Rate: {d.get('rate')}")
+    
     for i in range(len(temp_basal_events)):
         d = temp_basal_events[i]
         start = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
         rate = float(d.get("rate", 0))
 
-    # Ende = Start des nächsten Temp Basal Events
     if i + 1 < len(temp_basal_events):
         end = datetime.fromisoformat(temp_basal_events[i + 1]["created_at"].replace("Z", "+00:00"))
     else:
-        end = datetime.now(timezone.utc)  # ältestes Event läuft bis jetzt
+        end = datetime.now(timezone.utc)
 
-    # Dauer in Stunden
     hours = (end - start).total_seconds() / 3600.0
+    print(f"Start: {start}, End: {end}, Rate: {rate}, Hours: {hours}")
+
     if hours > 0:
-        # Auf Tagesbasis splitten
         current = start
         while current < end:
             day_end = datetime.combine(current.date(), time.max, tzinfo=current.tzinfo)
             period_end = min(day_end, end)
             hours_day = (period_end - current).total_seconds() / 3600.0
-            basal_rows.append({"date": current.date(), "basal": rate * hours_day})
+            basal_amount = rate * hours_day
+            print(f"  - {current.date()} | {hours_day:.2f}h * {rate} = {basal_amount:.2f}")
+            basal_rows.append({"date": current.date(), "basal": basal_amount})
             current = period_end + timedelta(seconds=1)
 
 
