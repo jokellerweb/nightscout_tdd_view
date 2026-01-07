@@ -31,6 +31,17 @@ def process_data(data):
         return pd.DataFrame(columns=["date", "basal", "smb", "bolus", "total"])
     
     # Summen pro Tag berechnen
+    daily = df.groupby("date", as_index=False).sum()  # <-- as_index=False behält "date" als Spalte
+    daily["total"] = daily["basal"] + daily["smb"] + daily["bolus"]
+
+    return daily
+
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        return pd.DataFrame(columns=["date", "basal", "smb", "bolus", "total"])
+    
+    # Summen pro Tag berechnen
     daily = df.groupby("date").sum()
     daily["total"] = daily["basal"] + daily["smb"] + daily["bolus"]
     daily = daily.reset_index()
