@@ -18,21 +18,21 @@ def process_data(data):
         dt = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00")).date()
         record = {"date": dt, "bolus": 0, "smb": 0, "basal": 0}
         if d.get("insulin"):
-            if d.get("insulinType") == "Bolus":
+            if d.get("insulinType") == "Correction Bolus":
                 record["bolus"] = d["insulin"]
-            elif d.get("insulinType") == "SMB":
-                record["smb"] = d["insulin"]
+            else 
+                record["diverses"] = d["insulin"]
         if d.get("basal"):
             record["basal"] = d["basal"]
         records.append(record)
 
     df = pd.DataFrame(records)
     if df.empty:
-        return pd.DataFrame(columns=["date", "basal", "smb", "bolus", "total"])
+        return pd.DataFrame(columns=["date", "basal", "diverses", "bolus", "total"])
     
     # Summen pro Tag berechnen
     daily = df.groupby("date", as_index=False).sum()  # <-- as_index=False behält "date" als Spalte
-    daily["total"] = daily["basal"] + daily["smb"] + daily["bolus"]
+    daily["total"] = daily["basal"] + daily["diverses"] + daily["bolus"]
 
     return daily
 
