@@ -11,12 +11,6 @@ def fetch_data(ns_url, ns_secret):
     return resp.json()
 
 def process_data(data):
-    """
-    Daten aus Nightscout verarbeiten:
-    - Basal über Temp Basal Events berechnen
-    - Bolus und andere Insuline summieren
-    - Tagesweise summieren
-    """
     basal_rows = []
     insulin_rows = []
 
@@ -26,34 +20,27 @@ def process_data(data):
         key=lambda x: x["created_at"]
     )
 
-    # Basal pro Zeitraum berechnen
     for i, d in enumerate(temp_basal_events):
         start = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
         rate = float(d.get("rate", 0))
         
-        # Ende ist entweder nächstes Temp Basal oder jetzt
+        # Ende = nächstes Temp Basal oder jetzt
         if i + 1 < len(temp_basal_events):
             end = datetime.fromisoformat(temp_basal_events[i+1]["created_at"].replace("Z", "+00:00"))
         else:
-            end = start  # fallback, später ggf. auf jetzt setzen
+            end = datetime.now(timezone.utc)
 
-        current = start
-        while current.date() <= end.date():
-            # Tagesende für die aktuelle Zeile
-            day_end = datetime.combine(current.date(), time.max, tzinfo=current.tzinfo)
-            period_end = min(day_end, end)
-            hours = (period_end - current).total_seconds() / 3600.0
-            basal_rows.append({"date": current.date(), "basal": rate * hours})
-            current = period_end + timedelta(seconds=1)  # nächste Periode
+        hours = (end - start).total_seconds() / 3600.0
+        if hours > 0:
+            basal_rows.append({"date": start.date(), "basal": rate * hours})
 
     # Bolus & Diverses summieren
     for d in data:
         dt = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00")).date()
         bolus = float(d.get("insulin", 0)) if d.get("insulin") else 0.0
-        diverses = 0.0  # ggf. andere Insulinarten hier ergänzen
+        diverses = 0.0
         insulin_rows.append({"date": dt, "bolus": bolus, "diverses": diverses})
 
-    # DataFrames erstellen
     df_basal = pd.DataFrame(basal_rows)
     df_insulin = pd.DataFrame(insulin_rows)
 
@@ -62,11 +49,9 @@ def process_data(data):
     if df_insulin.empty:
         df_insulin = pd.DataFrame(columns=["date", "bolus", "diverses"])
 
-    # Tagesweise summieren
     daily_basal = df_basal.groupby("date", as_index=False).sum(numeric_only=True)
     daily_insulin = df_insulin.groupby("date", as_index=False).sum(numeric_only=True)
 
-    # Zusammenführen
     daily = pd.merge(daily_basal, daily_insulin, on="date", how="outer").fillna(0)
     daily["total"] = daily["basal"] + daily["bolus"] + daily["diverses"]
 
