@@ -20,36 +20,35 @@ def process_data(data):
     basal_rows = []
     insulin_rows = []
 
-    # Temp Basal Events sortieren: **neuestes zuerst**
-    temp_basal_events = sorted(
-        [d for d in data if d.get("eventType") == "Temp Basal"],
-        key=lambda x: x["created_at"],
-    )
+# Temp Basal Events sortieren: ältestes zuerst
+temp_basal_events = sorted(
+    [d for d in data if d.get("eventType") == "Temp Basal"],
+    key=lambda x: x["created_at"]
+)
 
-    # Basal pro Zeitraum berechnen
-    for i in range(len(temp_basal_events)):
-        d = temp_basal_events[i]
-        start = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
-        rate = float(d.get("rate", 0))
+for i in range(len(temp_basal_events)):
+    d = temp_basal_events[i]
+    start = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
+    rate = float(d.get("rate", 0))
 
-        # Ende = Start des vorherigen (älteren) Temp Basal Events
-        if i + 1 < len(temp_basal_events):
-            end = datetime.fromisoformat(temp_basal_events[i + 1]["created_at"].replace("Z", "+00:00"))
-        else:
-            # Für das älteste Event: bis jetzt
-            end = datetime.now(timezone.utc)
+    # Ende = Start des nächsten Temp Basal Events
+    if i + 1 < len(temp_basal_events):
+        end = datetime.fromisoformat(temp_basal_events[i + 1]["created_at"].replace("Z", "+00:00"))
+    else:
+        end = datetime.now(timezone.utc)  # ältestes Event läuft bis jetzt
 
-        # Dauer in Stunden
-        hours = (end - start).total_seconds() / 3600.0
-        if hours > 0:
-            # Auf Tagesbasis splitten
-            current = start
-            while current < end:
-                day_end = datetime.combine(current.date(), time.max, tzinfo=current.tzinfo)
-                period_end = min(day_end, end)
-                hours_day = (period_end - current).total_seconds() / 3600.0
-                basal_rows.append({"date": current.date(), "basal": rate * hours_day})
-                current = period_end + timedelta(seconds=1)
+    # Dauer in Stunden
+    hours = (end - start).total_seconds() / 3600.0
+    if hours > 0:
+        # Auf Tagesbasis splitten
+        current = start
+        while current < end:
+            day_end = datetime.combine(current.date(), time.max, tzinfo=current.tzinfo)
+            period_end = min(day_end, end)
+            hours_day = (period_end - current).total_seconds() / 3600.0
+            basal_rows.append({"date": current.date(), "basal": rate * hours_day})
+            current = period_end + timedelta(seconds=1)
+
 
     # Bolus & Diverses summieren
     for d in data:
