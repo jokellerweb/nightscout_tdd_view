@@ -1,66 +1,70 @@
+import os
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# === CONFIG ===
-NIGHTSCOUT_URL = "https://dein-nightscout-url.herokuapp.com/api/v1"  # <--- anpassen
+# 🔹 Secrets aus Environment Variables
+NS_URL = os.getenv("NS_URL")
+NS_SECRET = os.getenv("NS_SECRET")
 
-# === HELPER ===
-def fetch_entries(entry_type="entries"):
-    url = f"{NIGHTSCOUT_URL}/{entry_type}.json"
-    r = requests.get(url)
-    r.raise_for_status()
-    return r.json()
+if not NS_URL or not NS_SECRET:
+    raise ValueError("NS_URL oder NS_SECRET nicht gesetzt!")
 
-def fetch_treatments():
-    return fetch_entries("treatments")
+# 🔹 Endpoints für Bolus, Basal, SMB
+endpoints = {
+    "bolus": f"{NS_URL}/api/v1/entries.json?count=1000&find[device]=Pump&token={NS_SECRET}",
+    "basal": f"{NS_URL}/api/v1/basal.json?count=1000&token={NS_SECRET}",
+    "smb":   f"{NS_URL}/api/v1/smb.json?count=1000&token={NS_SECRET}",
+}
 
-def parse_date(datestr):
-    return datetime.fromisoformat(datestr.replace("Z", "+00:00")).date()
+# 🔹 Funktion zum Abrufen der Daten
+def fetch_data(url):
+    resp = requests.get(url)
+    resp.raise_for_status()
+    return resp.json()
 
-# === DATEN SAMMELN ===
-treatments = fetch_treatments()
+# 🔹 Daten abrufen
+bolus_data = fetch_data(endpoints["bolus"])
+basal_data = fetch_data(endpoints["basal"])
+smb_data   = fetch_data(endpoints["smb"])
 
-data = []
-for t in treatments:
-    dt = parse_date(t['created_at'])
-    bolus = t.get('bolus', 0) if 'bolus' in t else t.get('insulin', 0)
-    basal = t.get('rate', 0) if t.get('eventType') == 'Temp Basal' else 0
-    smb = t.get('insulin', 0) if t.get('eventType') == 'Bolus Wizard' else 0
+# 🔹 Funktion zum Umwandeln in DataFrame
+def to_df(data, value_field="amount", time_field="date"):
+    df = pd.DataFrame(data)
+    if df.empty:
+        return pd.DataFrame(columns=["date", "value"])
+    # Unix timestamp oder ISO string
+    if time_field in df.columns:
+        df["date"] = pd.to_datetime(df[time_field], unit='ms', errors='coerce', utc=True)
+    else:
+        df["date"] = pd.to_datetime(df["created_at"], errors='coerce', utc=True)
+    df["value"] = pd.to_numeric(df[value_field], errors='coerce')
+    df = df.dropna(subset=["date", "value"])
+    df["day"] = df["date"].dt.date
+    return df[["day", "value"]]
 
-    data.append({"date": dt, "bolus": bolus, "basal": basal, "smb": smb})
+# 🔹 DataFrames erstellen
+df_bolus = to_df(bolus_data, value_field="amount", time_field="created_at")
+df_basal = to_df(basal_data, value_field="amount", time_field="created_at")
+df_smb   = to_df(smb_data, value_field="amount", time_field="created_at")
 
-df = pd.DataFrame(data)
-if df.empty:
-    print("Keine Daten gefunden.")
-    exit()
+# 🔹 Summen pro Tag berechnen
+daily = pd.DataFrame()
+daily["bolus"] = df_bolus.groupby("day")["value"].sum()
+daily["basal"] = df_basal.groupby("day")["value"].sum()
+daily["smb"]   = df_smb.groupby("day")["value"].sum()
+daily = daily.fillna(0)
+daily["total"] = daily.sum(axis=1)
 
-# Gruppieren nach Datum
-daily = df.groupby("date").sum()
-daily['total'] = daily['bolus'] + daily['basal'] + daily['smb']
-daily = daily.sort_index(ascending=False)
+# 🔹 HTML erstellen
+html_table = daily.to_html(classes="tdd-table", float_format="%.2f")
+with open("index.html", "w", encoding="utf-8") as f:
+    f.write("<html><head><style>")
+    f.write(".tdd-table { border-collapse: collapse; width: 100%; }")
+    f.write(".tdd-table th, .tdd-table td { border: 1px solid #ccc; padding: 5px; text-align: center; }")
+    f.write("</style></head><body>")
+    f.write("<h2>TDD Übersicht</h2>")
+    f.write(html_table)
+    f.write("</body></html>")
 
-# Durchschnittsberechnung
-avg_all = daily['total'].mean()
-avg_2 = daily['total'].head(2).mean()
-avg_3 = daily['total'].head(3).mean()
-avg_4 = daily['total'].head(4).mean()
-avg_7 = daily['total'].head(7).mean()
-
-# === TABLE PRINT ===
-def print_table(df):
-    print("\nTägliche TDD Übersicht (letzte 7 Tage)\n")
-    print(f"{'Datum':<12}{'Bolus (U)':<12}{'Basal (U)':<12}{'SMB (U)':<12}{'Gesamt (U)':<12}")
-    for i, (idx, row) in enumerate(df.head(7).iterrows()):
-        shade = "\033[47m" if i % 2 else ""  # leichte Grauschattierung für jede 2. Zeile
-        endshade = "\033[0m" if shade else ""
-        print(f"{shade}{idx}  {row['bolus']:<12.2f}{row['basal']:<12.2f}{row['smb']:<12.2f}{row['total']:<12.2f}{endshade}")
-
-print_table(daily)
-
-print("\nDurchschnittliche TDD:")
-print(f"Alle Daten: {avg_all:.2f} U")
-print(f"Letzte 2 Tage: {avg_2:.2f} U")
-print(f"Letzte 3 Tage: {avg_3:.2f} U")
-print(f"Letzte 4 Tage: {avg_4:.2f} U")
-print(f"Letzte 7 Tage: {avg_7:.2f} U")
+print("✅ TDD HTML erfolgreich erstellt: index.html")
