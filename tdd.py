@@ -19,7 +19,6 @@ def process_data(data):
     """
     basal_rows = []
     insulin_rows = []
-
     # Temp Basal Events sortieren: ältestes zuerst
     temp_basal_events = sorted(
         [d for d in data if d.get("eventType") == "Temp Basal"],
@@ -34,14 +33,14 @@ def process_data(data):
         d = temp_basal_events[i]
         start = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
         rate = float(d.get("rate", 0))
-
-    if i + 1 < len(temp_basal_events):
-        end = datetime.fromisoformat(temp_basal_events[i + 1]["created_at"].replace("Z", "+00:00"))
-    else:
-        end = datetime.now(timezone.utc)
-
-    hours = (end - start).total_seconds() / 3600.0
-    print(f"Start: {start}, End: {end}, Rate: {rate}, Hours: {hours}")
+    
+        if i + 1 < len(temp_basal_events):
+            end = datetime.fromisoformat(temp_basal_events[i + 1]["created_at"].replace("Z", "+00:00"))
+        else:
+            end = datetime.now(timezone.utc)
+    
+        hours = (end - start).total_seconds() / 3600.0
+        print(f"Start: {start}, End: {end}, Rate: {rate}, Hours: {hours}")
 
     if hours > 0:
         current = start
@@ -53,7 +52,6 @@ def process_data(data):
             print(f"  - {current.date()} | {hours_day:.2f}h * {rate} = {basal_amount:.2f}")
             basal_rows.append({"date": current.date(), "basal": basal_amount})
             current = period_end + timedelta(seconds=1)
-
 
     # Bolus & Diverses summieren
     for d in data:
