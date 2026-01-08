@@ -1,7 +1,7 @@
 import os
 import requests
-import pandas as pd
 from datetime import datetime, timedelta, time, timezone
+import pandas as pd
 
 def fetch_data(ns_url, ns_secret):
     """Alle Insulin-Daten aus treatments.json holen"""
@@ -10,57 +10,95 @@ def fetch_data(ns_url, ns_secret):
     resp.raise_for_status()
     return resp.json()
 
+from datetime import datetime, timedelta, time, timezone
+import pandas as pd
+
 def process_data(data):
     """
     Daten aus Nightscout verarbeiten:
-    - Basal über Temp Basal Events berechnen
-    - Bolus und andere Insuline summieren
-    - Tagesweise summieren
+    - Basal korrekt aus Temp Basal Events berechnen (Nightscout-Logik)
+    - Bolus summieren
+    - Tagesweise aggregieren
     """
+
     basal_rows = []
     insulin_rows = []
 
-    # Temp Basal Events sortieren nach Zeit
-    temp_basal_events = sorted(
-        [d for d in data if d.get("eventType") == "Temp Basal"],
-        key=lambda x: x["created_at"]
-    )
+    # --------------------------------------------------
+    # 1️⃣ TEMP BASAL EVENTS
+    # Nightscout liefert NEUSTE zuerst → wir brauchen ALT → NEU
+    # --------------------------------------------------
+    temp_basal_events = [
+        d for d in data
+        if d.get("eventType") == "Temp Basal" and d.get("rate") is not None
+    ]
+
+    temp_basal_events.sort(key=lambda x: x["created_at"])  # ALT → NEU  ### FIX
 
     for i, d in enumerate(temp_basal_events):
-        start = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00"))
-        rate = float(d.get("rate", 0))
-        
-        # Ende = nächstes Temp Basal oder jetzt
+        start = datetime.fromisoformat(
+            d["created_at"].replace("Z", "+00:00")
+        )
+        rate = float(d["rate"])
+
+        # Ende = nächstes Temp Basal ODER Tagesende  ### FIX
         if i + 1 < len(temp_basal_events):
-            end = datetime.fromisoformat(temp_basal_events[i+1]["created_at"].replace("Z", "+00:00"))
+            end = datetime.fromisoformat(
+                temp_basal_events[i + 1]["created_at"].replace("Z", "+00:00")
+            )
         else:
-            end = datetime.now(timezone.utc)
+            end = start.replace(
+                hour=23, minute=59, second=59, microsecond=999999
+            )
 
         current = start
+
+        # --------------------------------------------------
+        # 2️⃣ Zeitraum sauber über Tagesgrenzen splitten
+        # --------------------------------------------------
         while current < end:
-            # Tagesende für den aktuellen Tag
-            day_end = datetime.combine(current.date(), time.max, tzinfo=current.tzinfo)
+            day_end = current.replace(
+                hour=23, minute=59, second=59, microsecond=999999
+            )
             period_end = min(day_end, end)
+
             hours = (period_end - current).total_seconds() / 3600.0
             basal_amount = rate * hours
 
-            basal_rows.append({
-                "date": current.date(),
-                "basal": basal_amount
-            })
+            if basal_amount > 0:
+                basal_rows.append({
+                    "date": current.date(),
+                    "basal": basal_amount
+                })
 
-            print(f"Start: {current}, End: {period_end}, Rate: {rate}, Hours: {hours:.5f}, Basal: {basal_amount:.5f}")
+            # DEBUG (kannst du später löschen)
+            print(
+                f"Start: {current}, End: {period_end}, "
+                f"Rate: {rate}, Hours: {hours:.5f}, Basal: {basal_amount:.5f}"
+            )
 
             current = period_end + timedelta(seconds=1)
 
-    # Bolus & Diverses summieren
+    # --------------------------------------------------
+    # 3️⃣ BOLUS / INSULIN
+    # --------------------------------------------------
     for d in data:
-        dt = datetime.fromisoformat(d["created_at"].replace("Z", "+00:00")).date()
-        bolus = float(d.get("insulin", 0)) if d.get("insulin") else 0.0
-        diverses = 0.0
-        insulin_rows.append({"date": dt, "bolus": bolus, "diverses": diverses})
+        dt = datetime.fromisoformat(
+            d["created_at"].replace("Z", "+00:00")
+        ).date()
 
-    # DataFrames erstellen
+        bolus = float(d["insulin"]) if d.get("insulin") else 0.0
+        diverses = 0.0
+
+        insulin_rows.append({
+            "date": dt,
+            "bolus": bolus,
+            "diverses": diverses
+        })
+
+    # --------------------------------------------------
+    # 4️⃣ DATAFRAMES
+    # --------------------------------------------------
     df_basal = pd.DataFrame(basal_rows)
     df_insulin = pd.DataFrame(insulin_rows)
 
@@ -69,20 +107,25 @@ def process_data(data):
     if df_insulin.empty:
         df_insulin = pd.DataFrame(columns=["date", "bolus", "diverses"])
 
-    # Tagesweise summieren
     daily_basal = df_basal.groupby("date", as_index=False).sum(numeric_only=True)
     daily_insulin = df_insulin.groupby("date", as_index=False).sum(numeric_only=True)
 
-    # Zusammenführen
-    daily = pd.merge(daily_basal, daily_insulin, on="date", how="outer").fillna(0)
-    daily["total"] = daily["basal"] + daily["bolus"] + daily["diverses"]
+    daily = pd.merge(
+        daily_basal, daily_insulin,
+        on="date", how="outer"
+    ).fillna(0)
 
-    # Optional: nur bis gestern anzeigen, um "Morgen" zu vermeiden
-    today = datetime.now().date()
+    daily["total"] = (
+        daily["basal"] + daily["bolus"] + daily["diverses"]
+    )
+
+    # --------------------------------------------------
+    # 5️⃣ „MORGEN“-ZEILE VERMEIDEN
+    # --------------------------------------------------
+    today = datetime.now(timezone.utc).date()
     daily = daily[daily["date"] < today]
 
     return daily
-
 
 
 def write_html(df):
