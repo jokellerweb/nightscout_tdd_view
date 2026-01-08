@@ -1,144 +1,123 @@
 import os
 import requests
 import pandas as pd
-from datetime import datetime, timedelta, time, timezone
+from datetime import datetime, timedelta, timezone
+import pytz
 
-
-# --------------------------------------------------
-# Nightscout API
-# --------------------------------------------------
-def fetch_data(ns_url, ns_secret):
-    url = f"{ns_url}/api/v1/treatments.json?count=2000&token={ns_secret}"
-    resp = requests.get(url)
-    resp.raise_for_status()
-    return resp.json()
-
+NS_INTERVAL_MIN = 5  # Nightscout rechnet intern in 5-Minuten-Slots
 
 # --------------------------------------------------
-# Datenverarbeitung
+# API Fetcher
 # --------------------------------------------------
-def process_data(data):
-    """
-    Nightscout-konforme Berechnung:
-    - Temp Basal + Profile Basal
-    - Dauer = Zeit bis nächstes Basal-Event
-    - korrekt über Tagesgrenzen
-    """
+def fetch_json(url, secret):
+    headers = {"api-secret": secret}
+    r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json()
 
-    basal_rows = []
-    insulin_rows = []
+# --------------------------------------------------
+# Profile laden
+# --------------------------------------------------
+def load_profiles(ns_url, secret):
+    data = fetch_json(f"{ns_url}/api/v1/profile.json", secret)
+    return data
 
-    # ------------------------------
-    # BASAL EVENTS (Temp + Profile)
-    # ------------------------------
-    basal_events = [
-        d for d in data
-        if d.get("eventType") in ("Temp Basal", "Profile Switch")
-        and d.get("rate") is not None
+# --------------------------------------------------
+# Treatments laden
+# --------------------------------------------------
+def load_treatments(ns_url, secret, days=7):
+    since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    url = f"{ns_url}/api/v1/treatments.json?find[created_at][$gte]={since}&count=10000"
+    return fetch_json(url, secret)
+
+# --------------------------------------------------
+# Aktives Profil zum Zeitpunkt bestimmen
+# --------------------------------------------------
+def active_profile_at(profiles, ts):
+    valid = [
+        p for p in profiles
+        if datetime.fromisoformat(p["created_at"].replace("Z", "+00:00")) <= ts
     ]
+    return sorted(valid, key=lambda x: x["created_at"])[-1]
 
-    # Nightscout liefert NEU → ALT → wir brauchen ALT → NEU
-    basal_events.sort(key=lambda x: x["created_at"])
+# --------------------------------------------------
+# Basalrate aus Profil für Uhrzeit holen
+# --------------------------------------------------
+def basal_from_profile(profile, local_time):
+    schedule = profile["store"][profile["defaultProfile"]]["basal"]
+    minutes = local_time.hour * 60 + local_time.minute
 
-    for i, event in enumerate(basal_events):
-        start = datetime.fromisoformat(
-            event["created_at"].replace("Z", "+00:00")
-        )
-        rate = float(event["rate"])
-
-        # Ende = nächstes Basal-Event oder Tagesende
-        if i + 1 < len(basal_events):
-            end = datetime.fromisoformat(
-                basal_events[i + 1]["created_at"].replace("Z", "+00:00")
-            )
+    current = schedule[0]
+    for entry in schedule:
+        if minutes >= int(entry["time"]):
+            current = entry
         else:
-            end = start.replace(
-                hour=23, minute=59, second=59, microsecond=999999
-            )
+            break
+    return float(current["value"])
 
-        current = start
+# --------------------------------------------------
+# Temp Basal prüfen
+# --------------------------------------------------
+def temp_basal_at(treatments, ts):
+    for t in treatments:
+        if t.get("eventType") == "Temp Basal" and t.get("rate") is not None:
+            start = datetime.fromisoformat(t["created_at"].replace("Z", "+00:00"))
+            duration = t.get("duration", 0) * 60
+            end = start + timedelta(seconds=duration)
+            if start <= ts < end:
+                return float(t["rate"])
+    return None
 
-        # über Tagesgrenzen splitten
-        while current < end:
-            day_end = current.replace(
-                hour=23, minute=59, second=59, microsecond=999999
-            )
-            period_end = min(day_end, end)
+# --------------------------------------------------
+# Basal vollständig berechnen
+# --------------------------------------------------
+def calculate_basal(ns_url, secret, days=7):
+    profiles = load_profiles(ns_url, secret)
+    treatments = load_treatments(ns_url, secret, days)
 
-            hours = (period_end - current).total_seconds() / 3600.0
-            basal_amount = rate * hours
+    tz = pytz.timezone(profiles[-1]["timezone"])
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days)
 
-            if basal_amount > 0:
-                basal_rows.append({
-                    "date": current.date(),
-                    "basal": basal_amount
-                })
+    rows = []
 
-            # DEBUG
-            print(
-                f"Start: {current}, End: {period_end}, "
-                f"Rate: {rate}, Hours: {hours:.5f}, Basal: {basal_amount:.5f}"
-            )
+    t = start
+    while t < now:
+        profile = active_profile_at(profiles, t)
+        local = t.astimezone(tz)
 
-            current = period_end + timedelta(seconds=1)
+        rate = temp_basal_at(treatments, t)
+        if rate is None:
+            rate = basal_from_profile(profile, local)
 
-    # ------------------------------
-    # BOLUS / SMB
-    # ------------------------------
-    for d in data:
-        dt = datetime.fromisoformat(
-            d["created_at"].replace("Z", "+00:00")
-        ).date()
+        basal = rate * (NS_INTERVAL_MIN / 60)
 
-        bolus = float(d["insulin"]) if d.get("insulin") else 0.0
-
-        insulin_rows.append({
-            "date": dt,
-            "bolus": bolus,
-            "diverses": 0.0
+        rows.append({
+            "date": local.date(),
+            "basal": basal
         })
 
-    # ------------------------------
-    # DATAFRAMES
-    # ------------------------------
-    df_basal = pd.DataFrame(basal_rows)
-    df_insulin = pd.DataFrame(insulin_rows)
+        t += timedelta(minutes=NS_INTERVAL_MIN)
 
-    if df_basal.empty:
-        df_basal = pd.DataFrame(columns=["date", "basal"])
-    if df_insulin.empty:
-        df_insulin = pd.DataFrame(columns=["date", "bolus", "diverses"])
-
-    daily_basal = df_basal.groupby("date", as_index=False).sum(numeric_only=True)
-    daily_insulin = df_insulin.groupby("date", as_index=False).sum(numeric_only=True)
-
-    daily = pd.merge(
-        daily_basal,
-        daily_insulin,
-        on="date",
-        how="outer"
-    ).fillna(0)
-
-    daily["total"] = (
-        daily["basal"] + daily["bolus"] + daily["diverses"]
-    )
-
-    # kein "Morgen"
-    today = datetime.now(timezone.utc).date()
-    daily = daily[daily["date"] <= today]
-
-    return daily
-
+    df = pd.DataFrame(rows)
+    return df.groupby("date", as_index=False).sum()
 
 # --------------------------------------------------
-# HTML OUTPUT (unverändert)
+# Bolus / SMB
+# --------------------------------------------------
+def calculate_bolus(treatments):
+    rows = []
+    for t in treatments:
+        if t.get("insulin"):
+            dt = datetime.fromisoformat(t["created_at"].replace("Z", "+00:00")).date()
+            rows.append({"date": dt, "bolus": float(t["insulin"])})
+    return pd.DataFrame(rows).groupby("date", as_index=False).sum()
+
+# --------------------------------------------------
+# HTML (unverändert)
 # --------------------------------------------------
 def write_html(df):
-    table_html = df.to_html(
-        index=False,
-        float_format="{:.2f}".format,
-        classes="tdd-table"
-    )
+    table_html = df.to_html(index=False, float_format="{:.2f}".format, classes="tdd-table")
 
     html = f"""
 <!DOCTYPE html>
@@ -146,76 +125,39 @@ def write_html(df):
 <head>
 <meta charset="utf-8">
 <title>TDD Übersicht</title>
-
 <style>
-body {{
-    font-family: Arial, sans-serif;
-    margin: 40px;
-}}
-
-h2 {{
-    font-size: 24px;
-    margin-bottom: 20px;
-}}
-
-table.tdd-table {{
-    border-collapse: collapse;
-    width: 100%;
-    max-width: 800px;
-}}
-
-.tdd-table th {{
-    background-color: #444;
-    color: white;
-    padding: 10px;
-    font-size: 14px;
-    text-align: left;
-}}
-
-.tdd-table td {{
-    padding: 8px;
-    border: 1px solid #ddd;
-}}
-
-.tdd-table tr:nth-child(even) {{
-    background-color: #f2f2f2;
-}}
-
-.tdd-table tr:hover {{
-    background-color: #e6e6e6;
-}}
+body {{ font-family: Arial; margin: 40px; }}
+table {{ border-collapse: collapse; width: 100%; max-width: 800px; }}
+th {{ background: #444; color: #fff; padding: 10px; }}
+td {{ padding: 8px; border: 1px solid #ddd; }}
+tr:nth-child(even) {{ background: #f2f2f2; }}
 </style>
-
 </head>
 <body>
-
 <h2>Tägliche TDD Übersicht</h2>
 {table_html}
-
 </body>
 </html>
 """
-
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html)
-
-    print("index.html schön erstellt 😎")
-
 
 # --------------------------------------------------
 # MAIN
 # --------------------------------------------------
 def main():
-    ns_url = os.environ.get("NS_URL")
-    ns_secret = os.environ.get("NS_SECRET")
+    ns_url = os.environ["NS_URL"]
+    ns_secret = os.environ["NS_SECRET"]
 
-    if not ns_url or not ns_secret:
-        raise ValueError("NS_URL oder NS_SECRET fehlt!")
+    treatments = load_treatments(ns_url, ns_secret)
+    basal = calculate_basal(ns_url, ns_secret)
+    bolus = calculate_bolus(treatments)
 
-    data = fetch_data(ns_url, ns_secret)
-    daily = process_data(data)
-    write_html(daily)
+    df = pd.merge(basal, bolus, on="date", how="left").fillna(0)
+    df["diverses"] = 0.0
+    df["total"] = df["basal"] + df["bolus"]
 
+    write_html(df)
 
 if __name__ == "__main__":
     main()
