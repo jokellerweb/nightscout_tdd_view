@@ -34,11 +34,25 @@ def load_treatments(ns_url, secret, days=7):
 # Aktives Profil zum Zeitpunkt bestimmen
 # --------------------------------------------------
 def active_profile_at(profiles, ts):
-    valid = [
-        p for p in profiles
-        if datetime.fromisoformat(p["created_at"].replace("Z", "+00:00")) <= ts
-    ]
-    return sorted(valid, key=lambda x: x["created_at"])[-1]
+    """
+    Liefert das aktive Profil zum Zeitpunkt ts
+    Nightscout-Logik: letztes Profil mit startDate <= ts
+    """
+    active = None
+
+    for p in profiles:
+        start = p.get("startDate")
+        if not start:
+            continue
+
+        start_dt = datetime.fromisoformat(
+            start.replace("Z", "+00:00")
+        )
+
+        if start_dt <= ts:
+            active = p
+
+    return active
 
 # --------------------------------------------------
 # Basalrate aus Profil für Uhrzeit holen
