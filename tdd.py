@@ -75,7 +75,10 @@ def calculate_basal(ns_url, secret, days=7):
     profiles = load_profiles(ns_url, secret)
     treatments = load_treatments(ns_url, secret, days)
 
-    tz = pytz.timezone(profiles[-1]["timezone"])
+    latest_profile = profiles[-1]
+    store_name = latest_profile["defaultProfile"]
+    tz_name = latest_profile["store"][store_name].get("timezone", "UTC")
+    tz = pytz.timezone(tz_name)
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=days)
 
