@@ -1,50 +1,55 @@
 import os
 import requests
-from datetime import datetime, timedelta, time, timezone
 import pandas as pd
+from datetime import datetime, timedelta, time, timezone
 
+
+# --------------------------------------------------
+# Nightscout API
+# --------------------------------------------------
 def fetch_data(ns_url, ns_secret):
-    """Alle Insulin-Daten aus treatments.json holen"""
-    url = f"{ns_url}/api/v1/treatments.json?count=1000&token={ns_secret}"
+    url = f"{ns_url}/api/v1/treatments.json?count=2000&token={ns_secret}"
     resp = requests.get(url)
     resp.raise_for_status()
     return resp.json()
 
-from datetime import datetime, timedelta, time, timezone
-import pandas as pd
 
+# --------------------------------------------------
+# Datenverarbeitung
+# --------------------------------------------------
 def process_data(data):
     """
-    Daten aus Nightscout verarbeiten:
-    - Basal korrekt aus Temp Basal Events berechnen (Nightscout-Logik)
-    - Bolus summieren
-    - Tagesweise aggregieren
+    Nightscout-konforme Berechnung:
+    - Temp Basal + Profile Basal
+    - Dauer = Zeit bis nächstes Basal-Event
+    - korrekt über Tagesgrenzen
     """
 
     basal_rows = []
     insulin_rows = []
 
-    # --------------------------------------------------
-    # 1️⃣ TEMP BASAL EVENTS
-    # Nightscout liefert NEUSTE zuerst → wir brauchen ALT → NEU
-    # --------------------------------------------------
-    temp_basal_events = [
+    # ------------------------------
+    # BASAL EVENTS (Temp + Profile)
+    # ------------------------------
+    basal_events = [
         d for d in data
-        if d.get("eventType") == "Temp Basal" and d.get("rate") is not None
+        if d.get("eventType") in ("Temp Basal", "Profile Switch")
+        and d.get("rate") is not None
     ]
 
-    temp_basal_events.sort(key=lambda x: x["created_at"])  # ALT → NEU  ### FIX
+    # Nightscout liefert NEU → ALT → wir brauchen ALT → NEU
+    basal_events.sort(key=lambda x: x["created_at"])
 
-    for i, d in enumerate(temp_basal_events):
+    for i, event in enumerate(basal_events):
         start = datetime.fromisoformat(
-            d["created_at"].replace("Z", "+00:00")
+            event["created_at"].replace("Z", "+00:00")
         )
-        rate = float(d["rate"])
+        rate = float(event["rate"])
 
-        # Ende = nächstes Temp Basal ODER Tagesende  ### FIX
-        if i + 1 < len(temp_basal_events):
+        # Ende = nächstes Basal-Event oder Tagesende
+        if i + 1 < len(basal_events):
             end = datetime.fromisoformat(
-                temp_basal_events[i + 1]["created_at"].replace("Z", "+00:00")
+                basal_events[i + 1]["created_at"].replace("Z", "+00:00")
             )
         else:
             end = start.replace(
@@ -53,9 +58,7 @@ def process_data(data):
 
         current = start
 
-        # --------------------------------------------------
-        # 2️⃣ Zeitraum sauber über Tagesgrenzen splitten
-        # --------------------------------------------------
+        # über Tagesgrenzen splitten
         while current < end:
             day_end = current.replace(
                 hour=23, minute=59, second=59, microsecond=999999
@@ -71,7 +74,7 @@ def process_data(data):
                     "basal": basal_amount
                 })
 
-            # DEBUG (kannst du später löschen)
+            # DEBUG
             print(
                 f"Start: {current}, End: {period_end}, "
                 f"Rate: {rate}, Hours: {hours:.5f}, Basal: {basal_amount:.5f}"
@@ -79,26 +82,25 @@ def process_data(data):
 
             current = period_end + timedelta(seconds=1)
 
-    # --------------------------------------------------
-    # 3️⃣ BOLUS / INSULIN
-    # --------------------------------------------------
+    # ------------------------------
+    # BOLUS / SMB
+    # ------------------------------
     for d in data:
         dt = datetime.fromisoformat(
             d["created_at"].replace("Z", "+00:00")
         ).date()
 
         bolus = float(d["insulin"]) if d.get("insulin") else 0.0
-        diverses = 0.0
 
         insulin_rows.append({
             "date": dt,
             "bolus": bolus,
-            "diverses": diverses
+            "diverses": 0.0
         })
 
-    # --------------------------------------------------
-    # 4️⃣ DATAFRAMES
-    # --------------------------------------------------
+    # ------------------------------
+    # DATAFRAMES
+    # ------------------------------
     df_basal = pd.DataFrame(basal_rows)
     df_insulin = pd.DataFrame(insulin_rows)
 
@@ -111,34 +113,33 @@ def process_data(data):
     daily_insulin = df_insulin.groupby("date", as_index=False).sum(numeric_only=True)
 
     daily = pd.merge(
-        daily_basal, daily_insulin,
-        on="date", how="outer"
+        daily_basal,
+        daily_insulin,
+        on="date",
+        how="outer"
     ).fillna(0)
 
     daily["total"] = (
         daily["basal"] + daily["bolus"] + daily["diverses"]
     )
 
-    # --------------------------------------------------
-    # 5️⃣ „MORGEN“-ZEILE VERMEIDEN
-    # --------------------------------------------------
+    # kein "Morgen"
     today = datetime.now(timezone.utc).date()
-    daily = daily[daily["date"] < today]
+    daily = daily[daily["date"] <= today]
 
     return daily
 
 
+# --------------------------------------------------
+# HTML OUTPUT (unverändert)
+# --------------------------------------------------
 def write_html(df):
-    """Schöne HTML-Tabelle mit Zebra-Style erzeugen"""
-    
-    # HTML-Tabelle erzeugen (nur Inhalt)
     table_html = df.to_html(
         index=False,
         float_format="{:.2f}".format,
         classes="tdd-table"
     )
 
-    # Gesamtseite + CSS drumherum
     html = f"""
 <!DOCTYPE html>
 <html>
@@ -201,15 +202,20 @@ table.tdd-table {{
     print("index.html schön erstellt 😎")
 
 
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
 def main():
     ns_url = os.environ.get("NS_URL")
     ns_secret = os.environ.get("NS_SECRET")
+
     if not ns_url or not ns_secret:
-        raise ValueError("NS_URL oder NS_SECRET fehlt in den Environment-Variablen!")
+        raise ValueError("NS_URL oder NS_SECRET fehlt!")
 
     data = fetch_data(ns_url, ns_secret)
     daily = process_data(data)
     write_html(daily)
+
 
 if __name__ == "__main__":
     main()
